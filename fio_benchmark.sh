@@ -35,15 +35,15 @@ trap 'printf "\n"; log_error "Interrupted."; exit 130' SIGINT SIGTERM
 # ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
-log_info()  { printf "[INFO]  %s\n" "$*" >&2; }
-log_warn()  { printf "[WARN]  %s\n" "$*" >&2; }
+log_info() { printf "[INFO]  %s\n" "$*" >&2; }
+log_warn() { printf "[WARN]  %s\n" "$*" >&2; }
 log_error() { printf "[ERROR] %s\n" "$*" >&2; }
 
 # ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
 usage() {
-  cat <<EOF
+  cat << EOF
 Usage: sudo ${SCRIPT_NAME} [OPTIONS]
 
 Storage performance benchmark using fio. Runs 5 pre-defined tests:
@@ -81,9 +81,9 @@ EOF
 check_deps() {
   local missing=()
   for cmd in fio awk; do
-    command -v "$cmd" &>/dev/null || missing+=("$cmd")
+    command -v "$cmd" &> /dev/null || missing+=("$cmd")
   done
-  if (( ${#missing[@]} > 0 )); then
+  if ((${#missing[@]} > 0)); then
     log_error "Missing required commands: ${missing[*]}"
     log_error "Please install: ${missing[*]}"
     exit 1
@@ -104,13 +104,22 @@ parse_args() {
       t) TEST_TARGET="$OPTARG" ;;
       r) RUNTIME="$OPTARG" ;;
       n) DRY_RUN=true ;;
-      v) printf "%s version %s\n" "$SCRIPT_NAME" "$SCRIPT_VERSION"; exit 0 ;;
+      v)
+        printf "%s version %s\n" "$SCRIPT_NAME" "$SCRIPT_VERSION"
+        exit 0
+        ;;
       h) usage ;;
-      :) log_error "Option -${OPTARG} requires an argument."; exit 1 ;;
-      ?) log_error "Unknown option: -${OPTARG}"; exit 1 ;;
+      :)
+        log_error "Option -${OPTARG} requires an argument."
+        exit 1
+        ;;
+      ?)
+        log_error "Unknown option: -${OPTARG}"
+        exit 1
+        ;;
     esac
   done
-  shift $(( OPTIND - 1 ))
+  shift $((OPTIND - 1))
 }
 
 # ---------------------------------------------------------------------------
@@ -138,7 +147,8 @@ validate_inputs() {
   fi
 
   if ! [[ "$RUNTIME" =~ ^[1-9][0-9]*$ ]]; then
-    log_error "Runtime must be a positive integer (seconds), got: $RUNTIME"; exit 1
+    log_error "Runtime must be a positive integer (seconds), got: $RUNTIME"
+    exit 1
   fi
 }
 
@@ -159,8 +169,8 @@ interactive_prompts() {
   printf "Dry-run only? (y/N): "
   IFS= read -r input
   case "${input,,}" in
-    y|yes) DRY_RUN=true ;;
-    *)     DRY_RUN=false ;;
+    y | yes) DRY_RUN=true ;;
+    *) DRY_RUN=false ;;
   esac
 }
 
@@ -291,7 +301,7 @@ run_fio() {
     return
   fi
 
-  local timeout_secs=$(( RUNTIME * 3 ))
+  local timeout_secs=$((RUNTIME * 3))
   if ! timeout "$timeout_secs" fio \
     --name="$name" \
     --filename="$TEST_TARGET" \
@@ -332,12 +342,12 @@ run_fio() {
   local cpu_s="${metrics[6]}"
 
   local bw_fmt lat_fmt std_fmt p99_fmt cpu_u_fmt cpu_s_fmt
-  bw_fmt=$(printf    "%.1f MiB/s" "$bw_mib")
-  lat_fmt=$(printf   "%.2f ms"    "$lat_ms")
-  std_fmt=$(printf   "%.2f ms"    "$std_ms")
-  p99_fmt=$(printf   "%.2f ms"    "$p99_ms")
-  cpu_u_fmt=$(printf "%.2f%%"     "$cpu_u")
-  cpu_s_fmt=$(printf "%.2f%%"     "$cpu_s")
+  bw_fmt=$(printf "%.1f MiB/s" "$bw_mib")
+  lat_fmt=$(printf "%.2f ms" "$lat_ms")
+  std_fmt=$(printf "%.2f ms" "$std_ms")
+  p99_fmt=$(printf "%.2f ms" "$p99_ms")
+  cpu_u_fmt=$(printf "%.2f%%" "$cpu_u")
+  cpu_s_fmt=$(printf "%.2f%%" "$cpu_s")
 
   RESULTS+=("${name}|${iops_val}|${bw_fmt}|${lat_fmt}|${std_fmt}|${p99_fmt}|${cpu_u_fmt} / ${cpu_s_fmt}")
 
@@ -371,7 +381,7 @@ print_report() {
 # Main
 # ---------------------------------------------------------------------------
 main() {
-  if (( $# > 0 )); then
+  if (($# > 0)); then
     parse_args "$@"
   else
     TEST_TARGET="$DEFAULT_TARGET"
@@ -388,11 +398,11 @@ main() {
   printf "\n=== FIO Benchmark v%s ===\n\n" "$SCRIPT_VERSION"
 
   #            name           rw         bs     jobs  size    [extra...]
-  run_fio  "seqread"    "read"       "8k"    8    "1G"
-  run_fio  "seqwrite"   "write"      "32k"   4    "2G"
-  run_fio  "randread"   "randread"   "8k"   16    "1G"
-  run_fio  "randwrite"  "randwrite"  "64k"   8    "512m"
-  run_fio  "randrw"     "randrw"     "16k"   8    "1G"   "--rwmixread=90"
+  run_fio "seqread" "read" "8k" 8 "1G"
+  run_fio "seqwrite" "write" "32k" 4 "2G"
+  run_fio "randread" "randread" "8k" 16 "1G"
+  run_fio "randwrite" "randwrite" "64k" 8 "512m"
+  run_fio "randrw" "randrw" "16k" 8 "1G" "--rwmixread=90"
 
   "$DRY_RUN" || print_report
 }
