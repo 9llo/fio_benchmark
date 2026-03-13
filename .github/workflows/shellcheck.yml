@@ -1,0 +1,93 @@
+name: Shell Lint
+
+on:
+  push:
+    branches: ["main", "develop"]
+    paths:
+      - "**.sh"
+      - ".github/workflows/shellcheck.yml"
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**.sh"
+      - ".github/workflows/shellcheck.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck (${{ matrix.shell }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [bash]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: "."
+          severity: warning
+          check_together: true
+          additional_files: "fio_benchmark.sh"
+        env:
+          # Enable all optional checks for maximum coverage
+          SHELLCHECK_OPTS: >-
+            --enable=all
+            --shell=bash
+            --external-sources
+
+  shfmt:
+    name: shfmt format check
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install shfmt
+        run: |
+          SHFMT_VERSION="3.8.0"
+          curl -fsSL "https://github.com/mvdan/sh/releases/download/v${SHFMT_VERSION}/shfmt_v${SHFMT_VERSION}_linux_amd64" \
+            -o /usr/local/bin/shfmt
+          chmod +x /usr/local/bin/shfmt
+          shfmt --version
+
+      - name: Check formatting with shfmt
+        # -i 2  : 2-space indent
+        # -ci   : indent switch cases
+        # -bn   : binary ops at start of line
+        # -sr   : space after redirect operators
+        # -d    : diff mode (exit non-zero if changes needed)
+        run: |
+          shfmt -i 2 -ci -bn -sr -d fio_benchmark.sh
+
+  bash-version:
+    name: Syntax check (Bash ${{ matrix.bash-version }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        bash-version: ["4.4", "5.0", "5.1", "5.2"]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Pull Bash ${{ matrix.bash-version }} image
+        run: docker pull bash:${{ matrix.bash-version }}
+
+      - name: Syntax check in Bash ${{ matrix.bash-version }}
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/work" \
+            bash:${{ matrix.bash-version }} \
+            bash -n /work/fio_benchmark.sh && \
+            echo "Syntax OK for Bash ${{ matrix.bash-version }}"
