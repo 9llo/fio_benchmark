@@ -1,0 +1,19 @@
+# Force LF line endings in the repository for all text files,
+# regardless of the OS or git core.autocrlf setting.
+
+*           text=auto
+
+# Shell scripts must always use LF — CRLF breaks shebang and shfmt checks
+*.sh        text eol=lf
+
+# YAML workflows — also keep LF
+*.yml       text eol=lf
+*.yaml      text eol=lf
+
+# Markdown — platform-native is fine
+*.md        text
+
+# Binary files — no conversion
+*.png       binary
+*.jpg       binary
+*.gif       binary
