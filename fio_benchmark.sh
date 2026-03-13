@@ -12,12 +12,12 @@ shopt -s inherit_errexit
 # Constants
 # ---------------------------------------------------------------------------
 readonly SCRIPT_NAME="${BASH_SOURCE[0]##*/}"
-readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly SCRIPT_VERSION="1.3.0"
 
 readonly DEFAULT_TARGET="/dev/sdb"
 readonly DEFAULT_RUNTIME=600
-readonly SEPARATOR=$(printf '%0.s-' {1..117})
+SEPARATOR=$(printf '%0.s-' {1..117})
+readonly SEPARATOR
 
 # ---------------------------------------------------------------------------
 # Cleanup — runs on EXIT (normal or abnormal)
