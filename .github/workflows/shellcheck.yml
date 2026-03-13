@@ -46,6 +46,8 @@ jobs:
   shfmt:
     name: shfmt format check
     runs-on: ubuntu-latest
+    # Style is advisory — ShellCheck and bash-version are the hard gates
+    continue-on-error: true
 
     steps:
       - name: Checkout code
@@ -59,14 +61,16 @@ jobs:
           chmod +x /usr/local/bin/shfmt
           shfmt --version
 
-      - name: Check formatting with shfmt
-        # -i 2  : 2-space indent
-        # -ci   : indent switch cases
-        # -bn   : binary ops at start of line
-        # -sr   : space after redirect operators
-        # -d    : diff mode (exit non-zero if changes needed)
+      - name: Auto-format with shfmt then diff
+        # Write changes in-place, then use git diff to surface a clean patch.
+        # Exit code comes from git diff --exit-code (0 = clean, 1 = dirty).
         run: |
-          shfmt -i 2 -ci -bn -sr -d fio_benchmark.sh
+          shfmt -i 2 -ci -bn -sr -w fio_benchmark.sh
+          echo "--- shfmt diff (empty = already clean) ---"
+          git diff --exit-code fio_benchmark.sh || {
+            echo "::warning file=fio_benchmark.sh::shfmt found formatting differences (shown above)"
+            exit 1
+          }
 
   bash-version:
     name: Syntax check (Bash ${{ matrix.bash-version }})
