@@ -12,7 +12,7 @@ shopt -s inherit_errexit
 # Constants
 # ---------------------------------------------------------------------------
 readonly SCRIPT_NAME="${BASH_SOURCE[0]##*/}"
-readonly SCRIPT_VERSION="1.5.0"
+readonly SCRIPT_VERSION="1.6.0"
 
 readonly DEFAULT_TARGET="/dev/sdb"
 readonly DEFAULT_RUNTIME=600
@@ -261,8 +261,8 @@ collect_device_info() {
 # ---------------------------------------------------------------------------
 # Parse fio JSON output — single awk pass, no jq required
 #
-# Outputs 9 lines:
-#   IOPS | BW(MiB/s) | Lat(ms) | StdDev(ms) | p50(ms) | p99(ms) | p99.9(ms) | usr% | sys%
+# Outputs 11 lines:
+#   IOPS | BW(MiB/s) | RdLat(ms) | WrLat(ms) | RdStd(ms) | WrStd(ms) | p50(ms) | p99(ms) | p99.9(ms) | usr% | sys%
 # ---------------------------------------------------------------------------
 parse_fio_metrics() {
   local json_file="$1"
@@ -358,17 +358,17 @@ parse_fio_metrics() {
 
   END {
     total_iops = int(r_iops + w_iops)
-    total_bw   = (r_bw   + w_bw)   / 1048576   # bytes -> MiB/s
-    total_lat  = (r_mean  + w_mean) / 1000000   # ns    -> ms
-    total_std  = (r_std   + w_std)  / 1000000   # ns    -> ms
+    total_bw   = (r_bw + w_bw) / 1048576   # bytes -> MiB/s
     p50_ns  = (r_p50  > w_p50)  ? r_p50  : w_p50
     p99_ns  = (r_p99  > w_p99)  ? r_p99  : w_p99
     p999_ns = (r_p999 > w_p999) ? r_p999 : w_p999
 
     print total_iops
     print total_bw
-    print total_lat
-    print total_std
+    print r_mean  / 1000000   # ns -> ms  (read avg latency)
+    print w_mean  / 1000000   # ns -> ms  (write avg latency)
+    print r_std   / 1000000   # ns -> ms  (read latency stddev)
+    print w_std   / 1000000   # ns -> ms  (write latency stddev)
     print p50_ns  / 1000000
     print p99_ns  / 1000000
     print p999_ns / 1000000
@@ -381,7 +381,7 @@ parse_fio_metrics() {
 # ---------------------------------------------------------------------------
 # Core benchmark function
 #
-# Usage: run_fio <name> <rw> <bs> <numjobs> <size> [extra fio args...]
+# Usage: run_fio <name> <rw> <bs> <numjobs> <size> <iodepth> [extra fio args...]
 # Stores raw pipe-delimited values in RESULTS (formatted at report time).
 # Progress goes to stderr so stdout stays clean for JSON/CSV piping.
 # ---------------------------------------------------------------------------
@@ -391,18 +391,19 @@ run_fio() {
   local bs="$3"
   local jobs="$4"
   local size="$5"
-  local extra_args=("${@:6}")
+  local iodepth="$6"
+  local extra_args=("${@:7}")
 
   local tmp_json="${WORK_DIR}/fio_${name}.json"
   local tmp_err="${WORK_DIR}/fio_${name}.err"
 
-  printf "  Running %-22s (bs=%-5s jobs=%-2s size=%-5s) ... " \
-    "$name" "$bs" "$jobs" "$size" >&2
+  printf "  Running %-22s (bs=%-5s jobs=%-2s iodepth=%-3s size=%-5s) ... " \
+    "$name" "$bs" "$jobs" "$iodepth" "$size" >&2
 
   if "$DRY_RUN"; then
     printf "[DRY-RUN]\n" >&2
-    printf "    fio --name=%s --filename=%s --rw=%s --bs=%s --numjobs=%s --size=%s --direct=1 --ioengine=libaio --time_based --runtime=%s --group_reporting --output-format=json" \
-      "$name" "$TEST_TARGET" "$rw" "$bs" "$jobs" "$size" "$RUNTIME" >&2
+    printf "    fio --name=%s --filename=%s --rw=%s --bs=%s --numjobs=%s --iodepth=%s --size=%s --direct=1 --ioengine=libaio --time_based --runtime=%s --group_reporting --output-format=json" \
+      "$name" "$TEST_TARGET" "$rw" "$bs" "$jobs" "$iodepth" "$size" "$RUNTIME" >&2
     printf " %s" "${extra_args[@]+"${extra_args[@]}"}" >&2
     printf "\n" >&2
     return
@@ -415,6 +416,7 @@ run_fio() {
     --rw="$rw" \
     --bs="$bs" \
     --numjobs="$jobs" \
+    --iodepth="$iodepth" \
     --size="$size" \
     --direct=1 \
     --ioengine=libaio \
@@ -442,13 +444,15 @@ run_fio() {
 
   local iops="${metrics[0]}"
   local bw="${metrics[1]}"
-  local lat="${metrics[2]}"
-  local std="${metrics[3]}"
-  local p50="${metrics[4]}"
-  local p99="${metrics[5]}"
-  local p999="${metrics[6]}"
-  local cpu_u="${metrics[7]}"
-  local cpu_s="${metrics[8]}"
+  local r_lat="${metrics[2]}"
+  local w_lat="${metrics[3]}"
+  local r_std="${metrics[4]}"
+  local w_std="${metrics[5]}"
+  local p50="${metrics[6]}"
+  local p99="${metrics[7]}"
+  local p999="${metrics[8]}"
+  local cpu_u="${metrics[9]}"
+  local cpu_s="${metrics[10]}"
 
   # IOPS per 1% of combined CPU — hypervisor overhead comparison
   local eff
@@ -458,7 +462,7 @@ run_fio() {
     else       printf \"N/A\"
   }")
 
-  RESULTS+=("${name}|${iops}|${bw}|${lat}|${std}|${p50}|${p99}|${p999}|${cpu_u}|${cpu_s}|${eff}")
+  RESULTS+=("${name}|${iops}|${bw}|${r_lat}|${w_lat}|${r_std}|${w_std}|${p50}|${p99}|${p999}|${cpu_u}|${cpu_s}|${eff}")
 
   printf "Done.\n" >&2
 }
@@ -477,19 +481,19 @@ _report_text() {
     "$DEV_PHY_BS" "$DEV_SCHEDULER" "$RUNTIME"
   printf "%s\n" "$SEPARATOR"
   printf "%-22s | %-8s | %-12s | %-10s | %-10s | %-10s | %-10s | %-10s | %-18s | %-10s\n" \
-    "Test" "IOPS" "Bandwidth" "Avg Lat" "StdDev" "p50 Lat" "p99 Lat" "p99.9 Lat" \
+    "Test" "IOPS" "Bandwidth" "Rd Lat" "Wr Lat" "p50 Lat" "p99 Lat" "p99.9 Lat" \
     "CPU (usr / sys)" "IOPS/CPU"
   printf "%s\n" "$SEPARATOR"
 
   local row
   for row in "${RESULTS[@]}"; do
-    local n iops bw lat std p50 p99 p999 cu cs eff
-    IFS='|' read -r n iops bw lat std p50 p99 p999 cu cs eff <<< "$row"
+    local n iops bw r_lat w_lat r_std w_std p50 p99 p999 cu cs eff
+    IFS='|' read -r n iops bw r_lat w_lat r_std w_std p50 p99 p999 cu cs eff <<< "$row"
     printf "%-22s | %-8s | %-12s | %-10s | %-10s | %-10s | %-10s | %-10s | %-18s | %-10s\n" \
       "$n" "$iops" \
       "$(printf "%.1f MiB/s" "$bw")" \
-      "$(printf "%.2f ms" "$lat")" \
-      "$(printf "%.2f ms" "$std")" \
+      "$(printf "%.2f ms" "$r_lat")" \
+      "$(printf "%.2f ms" "$w_lat")" \
       "$(printf "%.2f ms" "$p50")" \
       "$(printf "%.2f ms" "$p99")" \
       "$(printf "%.2f ms" "$p999")" \
@@ -504,13 +508,13 @@ _report_text() {
 # Report — CSV  (main results + optional sweep sections)
 # ---------------------------------------------------------------------------
 _report_csv() {
-  printf "test,iops,bandwidth_mib,lat_avg_ms,lat_std_ms,lat_p50_ms,lat_p99_ms,lat_p999_ms,cpu_usr_pct,cpu_sys_pct,iops_per_cpu\n"
+  printf "test,iops,bandwidth_mib,r_lat_ms,w_lat_ms,r_std_ms,w_std_ms,lat_p50_ms,lat_p99_ms,lat_p999_ms,cpu_usr_pct,cpu_sys_pct,iops_per_cpu\n"
   local row
   for row in "${RESULTS[@]}"; do
-    local n iops bw lat std p50 p99 p999 cu cs eff
-    IFS='|' read -r n iops bw lat std p50 p99 p999 cu cs eff <<< "$row"
-    printf "%s,%s,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f,%.2f,%s\n" \
-      "$n" "$iops" "$bw" "$lat" "$std" "$p50" "$p99" "$p999" "$cu" "$cs" "$eff"
+    local n iops bw r_lat w_lat r_std w_std p50 p99 p999 cu cs eff
+    IFS='|' read -r n iops bw r_lat w_lat r_std w_std p50 p99 p999 cu cs eff <<< "$row"
+    printf "%s,%s,%.3f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f,%.2f,%s\n" \
+      "$n" "$iops" "$bw" "$r_lat" "$w_lat" "$r_std" "$w_std" "$p50" "$p99" "$p999" "$cu" "$cs" "$eff"
   done
 
   if [[ "${#SWEEP_RESULTS[@]}" -gt 0 ]]; then
@@ -558,12 +562,12 @@ _report_json() {
 
   local first=true row
   for row in "${RESULTS[@]}"; do
-    local n iops bw lat std p50 p99 p999 cu cs eff
-    IFS='|' read -r n iops bw lat std p50 p99 p999 cu cs eff <<< "$row"
+    local n iops bw r_lat w_lat r_std w_std p50 p99 p999 cu cs eff
+    IFS='|' read -r n iops bw r_lat w_lat r_std w_std p50 p99 p999 cu cs eff <<< "$row"
     "$first" || printf ',\n'
     first=false
-    printf '    {"test":"%s","iops":%s,"bandwidth_mib":%.3f,"lat_avg_ms":%.4f,"lat_std_ms":%.4f,"lat_p50_ms":%.4f,"lat_p99_ms":%.4f,"lat_p999_ms":%.4f,"cpu_usr_pct":%.2f,"cpu_sys_pct":%.2f,"iops_per_cpu":"%s"}' \
-      "$n" "$iops" "$bw" "$lat" "$std" "$p50" "$p99" "$p999" "$cu" "$cs" "$eff"
+    printf '    {"test":"%s","iops":%s,"bandwidth_mib":%.3f,"r_lat_ms":%.4f,"w_lat_ms":%.4f,"r_std_ms":%.4f,"w_std_ms":%.4f,"lat_p50_ms":%.4f,"lat_p99_ms":%.4f,"lat_p999_ms":%.4f,"cpu_usr_pct":%.2f,"cpu_sys_pct":%.2f,"iops_per_cpu":"%s"}' \
+      "$n" "$iops" "$bw" "$r_lat" "$w_lat" "$r_std" "$w_std" "$p50" "$p99" "$p999" "$cu" "$cs" "$eff"
   done
   printf '\n  ]'
 
@@ -636,6 +640,8 @@ run_iodepth_sweep() {
       --runtime="$RUNTIME" \
       --group_reporting \
       --output-format=json \
+      --randrepeat=0 \
+      --norandommap \
       > "$tmp_json" \
       2> "$tmp_err"; then
       printf "FAILED\n" >&2
@@ -653,8 +659,8 @@ run_iodepth_sweep() {
     local -a metrics
     readarray -t metrics <<< "$parsed_output"
 
-    # Store: depth | iops | bw | lat_avg | p99
-    SWEEP_RESULTS+=("${depth}|${metrics[0]}|${metrics[1]}|${metrics[2]}|${metrics[5]}")
+    # Store: depth | iops | bw | r_lat_avg | p99
+    SWEEP_RESULTS+=("${depth}|${metrics[0]}|${metrics[1]}|${metrics[2]}|${metrics[7]}")
 
     printf "Done.\n" >&2
   done
@@ -709,6 +715,7 @@ run_rwmix_sweep() {
       --rw=randrw \
       --bs=4k \
       --numjobs=8 \
+      --iodepth=8 \
       --rwmixwrite="$pct" \
       --size=1G \
       --direct=1 \
@@ -717,6 +724,8 @@ run_rwmix_sweep() {
       --runtime="$RUNTIME" \
       --group_reporting \
       --output-format=json \
+      --randrepeat=0 \
+      --norandommap \
       > "$tmp_json" \
       2> "$tmp_err"; then
       printf "FAILED\n" >&2
@@ -734,8 +743,8 @@ run_rwmix_sweep() {
     local -a metrics
     readarray -t metrics <<< "$parsed_output"
 
-    # Store: write_pct | iops | bw | lat_avg | p99
-    RWMIX_RESULTS+=("${pct}|${metrics[0]}|${metrics[1]}|${metrics[2]}|${metrics[5]}")
+    # Store: write_pct | iops | bw | r_lat_avg | p99
+    RWMIX_RESULTS+=("${pct}|${metrics[0]}|${metrics[1]}|${metrics[2]}|${metrics[7]}")
 
     printf "Done.\n" >&2
   done
@@ -785,16 +794,16 @@ main() {
 
   printf "\n=== FIO Benchmark v%s ===\n\n" "$SCRIPT_VERSION" >&2
 
-  #            name              rw            bs      jobs  size    [extra...]
-  run_fio "seqread"        "read"        "8k"    8    "1G"
-  run_fio "seqwrite"       "write"       "32k"   4    "2G"
-  run_fio "seq128kread"    "read"        "128k"  8    "2G"
-  run_fio "seq128kwrite"   "write"       "128k"  4    "2G"
-  run_fio "randread"       "randread"    "8k"    16   "1G"
-  run_fio "randwrite"      "randwrite"   "64k"   8    "512m"
-  run_fio "rand4kread"     "randread"    "4k"    16   "1G"
-  run_fio "rand4kwrite"    "randwrite"   "4k"    8    "1G"
-  run_fio "randrw"         "randrw"      "16k"   8    "1G"   "--rwmixread=90"
+  #            name              rw            bs      jobs  size    iodepth  [extra...]
+  run_fio "seqread"        "read"        "8k"    8    "1G"   4
+  run_fio "seqwrite"       "write"       "32k"   4    "2G"   4
+  run_fio "seq128kread"    "read"        "128k"  8    "2G"   4
+  run_fio "seq128kwrite"   "write"       "128k"  4    "2G"   4
+  run_fio "randread"       "randread"    "8k"    16   "1G"   8    "--randrepeat=0" "--norandommap"
+  run_fio "randwrite"      "randwrite"   "64k"   8    "512m" 8    "--randrepeat=0" "--norandommap"
+  run_fio "rand4kread"     "randread"    "4k"    16   "1G"   8    "--randrepeat=0" "--norandommap"
+  run_fio "rand4kwrite"    "randwrite"   "4k"    8    "1G"   8    "--randrepeat=0" "--norandommap"
+  run_fio "randrw"         "randrw"      "16k"   8    "1G"   8    "--rwmixread=90" "--randrepeat=0" "--norandommap"
 
   if "$DO_SWEEP"; then
     printf "\n" >&2
