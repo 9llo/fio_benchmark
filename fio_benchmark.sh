@@ -12,11 +12,11 @@ shopt -s inherit_errexit
 # Constants
 # ---------------------------------------------------------------------------
 readonly SCRIPT_NAME="${BASH_SOURCE[0]##*/}"
-readonly SCRIPT_VERSION="1.6.0"
+readonly SCRIPT_VERSION="1.7.0"
 
 readonly DEFAULT_TARGET="/dev/sdb"
 readonly DEFAULT_RUNTIME=600
-SEPARATOR=$(printf '%0.s-' {1..147})
+SEPARATOR=$(printf '%0.s-' {1..183})
 readonly SEPARATOR
 SWEEP_SEPARATOR=$(printf '%0.s-' {1..62})
 readonly SWEEP_SEPARATOR
@@ -359,6 +359,7 @@ parse_fio_metrics() {
   END {
     total_iops = int(r_iops + w_iops)
     total_bw   = (r_bw + w_bw) / 1048576   # bytes -> MiB/s
+    # Percentiles: worst-case (max) of read/write sides for mixed workloads
     p50_ns  = (r_p50  > w_p50)  ? r_p50  : w_p50
     p99_ns  = (r_p99  > w_p99)  ? r_p99  : w_p99
     p999_ns = (r_p999 > w_p999) ? r_p999 : w_p999
@@ -479,9 +480,10 @@ _report_text() {
     "$DEV_MODEL" "$DEV_TYPE" "$DEV_SIZE_GIB"
   printf "  Phys block: %s B  |  Scheduler: %s  |  Runtime per test: %ss\n" \
     "$DEV_PHY_BS" "$DEV_SCHEDULER" "$RUNTIME"
+  printf "  I/O engine: libaio  |  Direct I/O: yes (O_DIRECT)\n"
   printf "%s\n" "$SEPARATOR"
-  printf "%-22s | %-8s | %-12s | %-10s | %-10s | %-10s | %-10s | %-10s | %-18s | %-10s\n" \
-    "Test" "IOPS" "Bandwidth" "Rd Lat" "Wr Lat" "p50 Lat" "p99 Lat" "p99.9 Lat" \
+  printf "%-22s | %-8s | %-12s | %-10s | %-10s | %-10s | %-10s | %-10s | %-10s | %-10s | %-18s | %-10s\n" \
+    "Test" "IOPS" "Bandwidth" "Rd Lat" "Wr Lat" "Rd Std" "Wr Std" "p50 Lat" "p99 Lat" "p99.9 Lat" \
     "CPU (usr / sys)" "IOPS/CPU"
   printf "%s\n" "$SEPARATOR"
 
@@ -489,11 +491,13 @@ _report_text() {
   for row in "${RESULTS[@]}"; do
     local n iops bw r_lat w_lat r_std w_std p50 p99 p999 cu cs eff
     IFS='|' read -r n iops bw r_lat w_lat r_std w_std p50 p99 p999 cu cs eff <<< "$row"
-    printf "%-22s | %-8s | %-12s | %-10s | %-10s | %-10s | %-10s | %-10s | %-18s | %-10s\n" \
+    printf "%-22s | %-8s | %-12s | %-10s | %-10s | %-10s | %-10s | %-10s | %-10s | %-10s | %-18s | %-10s\n" \
       "$n" "$iops" \
       "$(printf "%.1f MiB/s" "$bw")" \
       "$(printf "%.2f ms" "$r_lat")" \
       "$(printf "%.2f ms" "$w_lat")" \
+      "$(printf "%.2f ms" "$r_std")" \
+      "$(printf "%.2f ms" "$w_std")" \
       "$(printf "%.2f ms" "$p50")" \
       "$(printf "%.2f ms" "$p99")" \
       "$(printf "%.2f ms" "$p999")" \
@@ -688,10 +692,10 @@ print_sweep_report() {
 }
 
 # ---------------------------------------------------------------------------
-# RW-mix sweep — randrw, bs=4k, numjobs=8, write% in RWMIX_WRITES
+# RW-mix sweep — randrw, bs=4k, numjobs=8, iodepth=8, write% in RWMIX_WRITES
 # ---------------------------------------------------------------------------
 run_rwmix_sweep() {
-  printf "  RW-mix sweep (randrw, bs=4k, numjobs=8):\n" >&2
+  printf "  RW-mix sweep (randrw, bs=4k, numjobs=8, iodepth=8):\n" >&2
 
   local pct
   for pct in "${RWMIX_WRITES[@]}"; do
@@ -703,7 +707,7 @@ run_rwmix_sweep() {
 
     if "$DRY_RUN"; then
       printf "[DRY-RUN]\n" >&2
-      printf "      fio --name=%s --filename=%s --rw=randrw --bs=4k --numjobs=8 --rwmixwrite=%s --size=1G --direct=1 --ioengine=libaio --time_based --runtime=%s --group_reporting --output-format=json\n" \
+      printf "      fio --name=%s --filename=%s --rw=randrw --bs=4k --numjobs=8 --iodepth=8 --rwmixwrite=%s --size=1G --direct=1 --ioengine=libaio --time_based --runtime=%s --group_reporting --output-format=json --randrepeat=0 --norandommap\n" \
         "$name" "$TEST_TARGET" "$pct" "$RUNTIME" >&2
       continue
     fi
@@ -743,15 +747,17 @@ run_rwmix_sweep() {
     local -a metrics
     readarray -t metrics <<< "$parsed_output"
 
-    # Store: write_pct | iops | bw | r_lat_avg | p99
-    RWMIX_RESULTS+=("${pct}|${metrics[0]}|${metrics[1]}|${metrics[2]}|${metrics[7]}")
+    # Store: write_pct | iops | bw | lat_avg (max of r/w) | p99
+    local lat_avg
+    lat_avg=$(awk "BEGIN { r=${metrics[2]}; w=${metrics[3]}; print (r>w) ? r : w }")
+    RWMIX_RESULTS+=("${pct}|${metrics[0]}|${metrics[1]}|${lat_avg}|${metrics[7]}")
 
     printf "Done.\n" >&2
   done
 }
 
 print_rwmix_report() {
-  printf "\nRW-mix Sweep — randrw, bs=4k, numjobs=8\n"
+  printf "\nRW-mix Sweep — randrw, bs=4k, numjobs=8, iodepth=8\n"
   printf "%s\n" "$RWMIX_SEPARATOR"
   printf "%-12s | %-8s | %-12s | %-10s | %-10s\n" \
     "Write %" "IOPS" "Bandwidth" "Avg Lat" "p99 Lat"
@@ -795,15 +801,21 @@ main() {
   printf "\n=== FIO Benchmark v%s ===\n\n" "$SCRIPT_VERSION" >&2
 
   #            name              rw            bs      jobs  size    iodepth  [extra...]
+  # Sequential: read (8k, 8 jobs) models DB sequential scan;
+  #             write (32k, 4 jobs) models journal/WAL append workload
   run_fio "seqread"        "read"        "8k"    8    "1G"   4
-  run_fio "seqwrite"       "write"       "32k"   4    "2G"   4
+  run_fio "seqwrite"       "write"       "32k"   4    "2G"   4    "--refill_buffers" "--end_fsync=1"
+  # Sequential 128k: max-throughput / backup workload
   run_fio "seq128kread"    "read"        "128k"  8    "2G"   4
-  run_fio "seq128kwrite"   "write"       "128k"  4    "2G"   4
+  run_fio "seq128kwrite"   "write"       "128k"  4    "2G"   4    "--refill_buffers" "--end_fsync=1"
+  # Random: read (8k, 16 jobs) models index lookups;
+  #         write (64k, 8 jobs) models log-structured merge / compaction
   run_fio "randread"       "randread"    "8k"    16   "1G"   8    "--randrepeat=0" "--norandommap"
-  run_fio "randwrite"      "randwrite"   "64k"   8    "512m" 8    "--randrepeat=0" "--norandommap"
+  run_fio "randwrite"      "randwrite"   "64k"   8    "512m" 8    "--randrepeat=0" "--norandommap" "--refill_buffers" "--end_fsync=1"
+  # 4K random: industry-standard benchmark unit
   run_fio "rand4kread"     "randread"    "4k"    16   "1G"   8    "--randrepeat=0" "--norandommap"
-  run_fio "rand4kwrite"    "randwrite"   "4k"    8    "1G"   8    "--randrepeat=0" "--norandommap"
-  run_fio "randrw"         "randrw"      "16k"   8    "1G"   8    "--rwmixread=90" "--randrepeat=0" "--norandommap"
+  run_fio "rand4kwrite"    "randwrite"   "4k"    8    "1G"   8    "--randrepeat=0" "--norandommap" "--refill_buffers" "--end_fsync=1"
+  run_fio "randrw"         "randrw"      "16k"   8    "1G"   8    "--rwmixread=90" "--randrepeat=0" "--norandommap" "--refill_buffers" "--end_fsync=1"
 
   if "$DO_SWEEP"; then
     printf "\n" >&2
