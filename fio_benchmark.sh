@@ -42,8 +42,8 @@ trap 'printf "\n" >&2; log_error "Interrupted."; exit 130' SIGINT SIGTERM
 # ---------------------------------------------------------------------------
 # Logging helpers
 # ---------------------------------------------------------------------------
-log_info()  { printf "[INFO]  %s\n" "$*" >&2; }
-log_warn()  { printf "[WARN]  %s\n" "$*" >&2; }
+log_info() { printf "[INFO]  %s\n" "$*" >&2; }
+log_warn() { printf "[WARN]  %s\n" "$*" >&2; }
 log_error() { printf "[ERROR] %s\n" "$*" >&2; }
 
 # ---------------------------------------------------------------------------
@@ -230,24 +230,24 @@ collect_device_info() {
   # Walk up to the parent block device if given a partition
   if [[ ! -d "$sys_block" && -e "/sys/class/block/${dev_name}" ]]; then
     local parent
-    parent=$(readlink "/sys/class/block/${dev_name}" 2>/dev/null \
+    parent=$(readlink "/sys/class/block/${dev_name}" 2> /dev/null \
       | awk -F/ '{ print $(NF-1) }' || true)
     [[ -n "${parent:-}" && -d "/sys/block/${parent}" ]] \
       && sys_block="/sys/block/${parent}"
   fi
 
   if [[ -d "$sys_block" ]]; then
-    DEV_MODEL=$(tr -d '[:space:]' < "${sys_block}/device/model" 2>/dev/null \
+    DEV_MODEL=$(tr -d '[:space:]' < "${sys_block}/device/model" 2> /dev/null \
       || printf "N/A")
     local rotational
-    rotational=$(cat "${sys_block}/queue/rotational" 2>/dev/null || printf "1")
+    rotational=$(cat "${sys_block}/queue/rotational" 2> /dev/null || printf "1")
     [[ "$rotational" == "0" ]] && DEV_TYPE="SSD/NVMe" || DEV_TYPE="HDD (rotational)"
     DEV_SCHEDULER=$(awk 'match($0, /\[([^]]+)\]/, a) { print a[1] }' \
-      "${sys_block}/queue/scheduler" 2>/dev/null || printf "N/A")
-    DEV_PHY_BS=$(cat "${sys_block}/queue/physical_block_size" 2>/dev/null \
+      "${sys_block}/queue/scheduler" 2> /dev/null || printf "N/A")
+    DEV_PHY_BS=$(cat "${sys_block}/queue/physical_block_size" 2> /dev/null \
       || printf "N/A")
     local sectors
-    sectors=$(cat "${sys_block}/size" 2>/dev/null || printf "0")
+    sectors=$(cat "${sys_block}/size" 2> /dev/null || printf "0")
     DEV_SIZE_GIB=$(awk "BEGIN { printf \"%.2f\", ${sectors} * 512 / 1073741824 }")
   else
     DEV_MODEL="N/A"
@@ -552,16 +552,16 @@ _report_json() {
   ts=$(date '+%Y-%m-%dT%H:%M:%S')
 
   printf '{\n'
-  printf '  "timestamp": "%s",\n'   "$ts"
+  printf '  "timestamp": "%s",\n' "$ts"
   printf '  "device": {\n'
-  printf '    "path": "%s",\n'       "$TEST_TARGET"
-  printf '    "model": "%s",\n'      "$DEV_MODEL"
-  printf '    "type": "%s",\n'       "$DEV_TYPE"
+  printf '    "path": "%s",\n' "$TEST_TARGET"
+  printf '    "model": "%s",\n' "$DEV_MODEL"
+  printf '    "type": "%s",\n' "$DEV_TYPE"
   printf '    "capacity_gib": "%s",\n' "$DEV_SIZE_GIB"
   printf '    "phys_block_bytes": "%s",\n' "$DEV_PHY_BS"
-  printf '    "scheduler": "%s"\n'   "$DEV_SCHEDULER"
+  printf '    "scheduler": "%s"\n' "$DEV_SCHEDULER"
   printf '  },\n'
-  printf '  "runtime_secs": %s,\n'  "$RUNTIME"
+  printf '  "runtime_secs": %s,\n' "$RUNTIME"
   printf '  "results": [\n'
 
   local first=true row
@@ -803,19 +803,19 @@ main() {
   #            name              rw            bs      jobs  size    iodepth  [extra...]
   # Sequential: read (8k, 8 jobs) models DB sequential scan;
   #             write (32k, 4 jobs) models journal/WAL append workload
-  run_fio "seqread"        "read"        "8k"    8    "1G"   4
-  run_fio "seqwrite"       "write"       "32k"   4    "2G"   4    "--refill_buffers" "--end_fsync=1"
+  run_fio "seqread" "read" "8k" 8 "1G" 4
+  run_fio "seqwrite" "write" "32k" 4 "2G" 4 "--refill_buffers" "--end_fsync=1"
   # Sequential 128k: max-throughput / backup workload
-  run_fio "seq128kread"    "read"        "128k"  8    "2G"   4
-  run_fio "seq128kwrite"   "write"       "128k"  4    "2G"   4    "--refill_buffers" "--end_fsync=1"
+  run_fio "seq128kread" "read" "128k" 8 "2G" 4
+  run_fio "seq128kwrite" "write" "128k" 4 "2G" 4 "--refill_buffers" "--end_fsync=1"
   # Random: read (8k, 16 jobs) models index lookups;
   #         write (64k, 8 jobs) models log-structured merge / compaction
-  run_fio "randread"       "randread"    "8k"    16   "1G"   8    "--randrepeat=0" "--norandommap"
-  run_fio "randwrite"      "randwrite"   "64k"   8    "512m" 8    "--randrepeat=0" "--norandommap" "--refill_buffers" "--end_fsync=1"
+  run_fio "randread" "randread" "8k" 16 "1G" 8 "--randrepeat=0" "--norandommap"
+  run_fio "randwrite" "randwrite" "64k" 8 "512m" 8 "--randrepeat=0" "--norandommap" "--refill_buffers" "--end_fsync=1"
   # 4K random: industry-standard benchmark unit
-  run_fio "rand4kread"     "randread"    "4k"    16   "1G"   8    "--randrepeat=0" "--norandommap"
-  run_fio "rand4kwrite"    "randwrite"   "4k"    8    "1G"   8    "--randrepeat=0" "--norandommap" "--refill_buffers" "--end_fsync=1"
-  run_fio "randrw"         "randrw"      "16k"   8    "1G"   8    "--rwmixread=90" "--randrepeat=0" "--norandommap" "--refill_buffers" "--end_fsync=1"
+  run_fio "rand4kread" "randread" "4k" 16 "1G" 8 "--randrepeat=0" "--norandommap"
+  run_fio "rand4kwrite" "randwrite" "4k" 8 "1G" 8 "--randrepeat=0" "--norandommap" "--refill_buffers" "--end_fsync=1"
+  run_fio "randrw" "randrw" "16k" 8 "1G" 8 "--rwmixread=90" "--randrepeat=0" "--norandommap" "--refill_buffers" "--end_fsync=1"
 
   if "$DO_SWEEP"; then
     printf "\n" >&2
